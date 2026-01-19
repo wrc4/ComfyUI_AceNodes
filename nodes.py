@@ -769,140 +769,6 @@ class ACE_ImageQA:
                 )
             return (result,)
         
-class ACE_ImageLoadFromCloud:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "filepath": ("STRING", {"default": ''}),
-                "bucket": ("STRING", {"default": ''}),
-                "region": ("STRING", {"default": ''}),
-                "cloud": (["aws-s3","aliyun-oss"],),
-                "access_key_id": ("STRING", {"default": ''}),
-                "access_key_secret": ("STRING", {"default": ''}),
-            },
-        }
-    
-    RETURN_TYPES = ("IMAGE", "MASK",)
-    FUNCTION = "execute"
-    CATEGORY = "Ace Nodes"
-
-    def execute(self, filepath, bucket, region, cloud, access_key_id, access_key_secret):
-        save_path = os.path.join(folder_paths.temp_directory, bucket, filepath)
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-
-        if cloud == "aws-s3":
-            import boto3
-            s3 = boto3.client('s3', 
-                              aws_access_key_id=access_key_id, 
-                              aws_secret_access_key=access_key_secret, 
-                              region_name=region)
-            s3.download_file(bucket, filepath, save_path)
-        elif cloud == "aliyun-oss":
-            import oss2
-            oss_auth = oss2.Auth(access_key_id, access_key_secret)
-            oss_bucket = oss2.Bucket(oss_auth, region, bucket)
-            oss_bucket.get_object_to_file(filepath, save_path)
-        else:
-            raise Exception(f'Cloud "{cloud}" is not supported')
-            
-        image = f"{bucket}/{filepath} [temp]"
-        
-        image_path = folder_paths.get_annotated_filepath(image)
-        from PIL import ImageSequence, ImageOps
-        img = Image.open(image_path)
-        output_images = []
-        output_masks = []
-        for i in ImageSequence.Iterator(img):
-            i = ImageOps.exif_transpose(i)
-            if i.mode == 'I':
-                i = i.point(lambda i: i * (1 / 255))
-            image = i.convert("RGB")
-            image = np.array(image).astype(np.float32) / 255.0
-            image = torch.from_numpy(image)[None,]
-            if 'A' in i.getbands():
-                mask = np.array(i.getchannel('A')).astype(np.float32) / 255.0
-                mask = 1. - torch.from_numpy(mask)
-            else:
-                mask = torch.zeros((64,64), dtype=torch.float32, device="cpu")
-            output_images.append(image)
-            output_masks.append(mask.unsqueeze(0))
-
-        if len(output_images) > 1:
-            output_image = torch.cat(output_images, dim=0)
-            output_mask = torch.cat(output_masks, dim=0)
-        else:
-            output_image = output_images[0]
-            output_mask = output_masks[0]
-
-        return (output_image, output_mask)
-
-class ACE_ImageSaveToCloud:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "images": ("IMAGE",),
-                "filepath": ("STRING", {"default": 'ComfyUI_{0:05d}_{1:%Y-%m-%d_%H:%M:%S}.png'}),
-                "bucket": ("STRING", {"default": ''}),
-                "region": ("STRING", {"default": ''}),
-                "cloud": (["aws-s3","aliyun-oss"],),
-                "access_key_id": ("STRING", {"default": ''}),
-                "access_key_secret": ("STRING", {"default": ''}),
-            },
-        }
-    
-    RETURN_TYPES = ()
-    OUTPUT_NODE = True
-    FUNCTION = "execute"
-    CATEGORY = "Ace Nodes"
-
-    def execute(self, images, filepath, bucket, region, cloud, access_key_id, access_key_secret):
-        now = datetime.now()
-        results = []
-        files_to_upload = []
-        for (batch_number, image) in enumerate(images):
-            i = 255. * image.cpu().numpy()
-            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
-
-            filepath_formated = filepath.format(batch_number, now)
-            save_path = os.path.join(folder_paths.temp_directory, bucket, filepath_formated)
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            img.save(save_path, compress_level=1)
-
-            file, subfolder = os.path.basename(filepath_formated), os.path.join(bucket, os.path.dirname(filepath_formated))
-            results.append({
-                "filename": file,
-                "subfolder": subfolder,
-                "type": "temp"
-            })
-            files_to_upload.append((save_path, filepath_formated))
-
-        if cloud == "aws-s3":
-            import boto3
-            s3 = boto3.client('s3', 
-                              aws_access_key_id=access_key_id, 
-                              aws_secret_access_key=access_key_secret, 
-                              region_name=region)
-            for filename, objectname in files_to_upload:
-                try:
-                    s3.upload_file(filename, bucket, objectname)
-                except Exception as e:
-                    print(f'An error occurred: {e}')
-        elif cloud == "aliyun-oss":
-            import oss2
-            oss_auth = oss2.Auth(access_key_id, access_key_secret)
-            oss_bucket = oss2.Bucket(oss_auth, region, bucket)
-            for filename, objectname in files_to_upload:
-                try:
-                    oss_bucket.put_object_from_file(objectname, filename)
-                except Exception as e:
-                    print(f'An error occurred: {e}')
-        else:
-            raise Exception(f'Cloud "{cloud}" is not supported')
-
-        return { "ui": { "images": results } }
-    
 class ACE_ImageGetSize:
     @classmethod
     def INPUT_TYPES(s):
@@ -1709,8 +1575,6 @@ NODE_CLASS_MAPPINGS = {
     "ACE_ImageRemoveBackground" : ACE_ImageRemoveBackground,
     "ACE_ImageColorFix"         : ACE_ImageColorFix,
     "ACE_ImageQA"               : ACE_ImageQA,
-    "ACE_ImageLoadFromCloud"    : ACE_ImageLoadFromCloud,
-    "ACE_ImageSaveToCloud"      : ACE_ImageSaveToCloud,
     "ACE_ImageGetSize"          : ACE_ImageGetSize,
     "ACE_ImageFaceCrop"         : ACE_ImageFaceCrop,
     "ACE_ImagePixelate"         : ACE_ImagePixelate,
@@ -1759,8 +1623,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ACE_ImageRemoveBackground" : "🅐 Image Remove Background",
     "ACE_ImageColorFix"         : "🅐 Image Color Fix",
     "ACE_ImageQA"               : "🅐 Image Question Answering",
-    "ACE_ImageLoadFromCloud"    : "🅐 Image Load From Cloud",
-    "ACE_ImageSaveToCloud"      : "🅐 Image Save To Cloud",
     "ACE_ImageGetSize"          : "🅐 Image Get Size",
     "ACE_ImageFaceCrop"         : "🅐 Image Face Crop",
     "ACE_ImagePixelate"         : "🅐 Image Pixelate",
